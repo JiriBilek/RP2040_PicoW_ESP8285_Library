@@ -23,7 +23,7 @@ class EspAtDrv_linkInfo:
 # constants
 # Logging: setting to True enables the particular logging
 LOG_ERROR = const(True)
-LOG_INFO = const(False)
+LOG_INFO = const(True)
 LOG_DEBUG = const(False)
 
 LINKS_COUNT = const(5)
@@ -69,6 +69,21 @@ wifiModeDef = 0
 persistent = False
 lastSync = 0  # in milliseconds
  
+def _waitReady(timeout_ms: int = 3000) -> bool:
+    global espUART
+    end = utime.ticks_add(utime.ticks_ms(), timeout_ms)
+    buf = b''
+    while utime.ticks_diff(end, utime.ticks_ms()) > 0:
+        n = espUART.any()
+        if n:
+            buf += espUART.read(n)
+            if b'ready' in buf:
+                LOG_INFO_PRINT("ready received\r\n")
+                return True
+        utime.sleep_ms(50)
+    LOG_INFO_PRINT("ready not received (timeout)\r\n")
+    return False
+
 def init(resetType: int) -> int:
     global espUART, lastErrorCode, linkInfo
     
@@ -92,8 +107,8 @@ def reset(resetType: int) -> int:
     if (resetType == WIFI_SOFT_RESET):
         LOG_INFO_PRINT("soft reset\r\n")
 
-        sendString("AT+RST")
-        sendCommand("ready", True, False)  # can be missed
+        sendString("AT+RST\r\n")
+        _waitReady(3000)  # drain boot noise without triggering error log
     else:
         LOG_INFO_PRINT("no reset\r\n")
 
@@ -117,6 +132,10 @@ def reset(resetType: int) -> int:
 def maintain():
     global lastErrorCode
     
+    if espUART is None:
+        lastErrorCode = Error_NOT_INITIALIZED
+        return False
+    
     lastErrorCode = Error_NO_ERROR
     return readRX(None, False, False)
 
@@ -127,7 +146,7 @@ def sendString(cmd: str) -> int:
     n = espUART.write(cmd)
     return (n == len(cmd))
     
-def sendCommand(expected: str, bufferData: int, listItem: int):
+def sendCommand(expected: str, bufferData: int, listItem: int, timeoutCount: int = TIMEOUT_COUNT):
     global lastErrorCode
     
     # AT command is already printed, but not 'entered' with "\r\n"
@@ -139,7 +158,7 @@ def sendCommand(expected: str, bufferData: int, listItem: int):
         return False
 
     if (expected):
-        return readRX(expected, bufferData, listItem)
+        return readRX(expected, bufferData, listItem, timeoutCount)
     else:
         return readOK()
 
@@ -154,7 +173,7 @@ def simpleCommand(cmd: str) -> int:
 
     return readOK()
 
-def readRX(expected: str, bufferData: int, listItem: int) -> int:
+def readRX(expected: str, bufferData: int, listItem: int, timeoutCount: int = TIMEOUT_COUNT) -> int:
     global espUART, buffer, lastErrorCode, linkInfo
     
     timeout = 0
@@ -171,7 +190,7 @@ def readRX(expected: str, bufferData: int, listItem: int) -> int:
         b = espUART.read(1)
         if (b == None):  # read first byte with stream's timeout
             # timeout or unconnected
-            if (timeout == TIMEOUT_COUNT):
+            if (timeout == timeoutCount):
                 LOG_ERROR_PRINT("AT firmware not responding\r\n")
                 lastErrorCode = Error_AT_NOT_RESPONDING
                 return False
@@ -312,7 +331,7 @@ def readOK() -> int:
     return readRX("OK", True, False)
 
 def staStatus() -> int:
-    global wifiModedef, lastErrorCode, buffer
+    global wifiModeDef, lastErrorCode, buffer
     
     maintain()
 
@@ -392,11 +411,11 @@ def setWifiMode(mode: int, save: int) -> int:
     if (sendCommand(None, True, False) == False):
         return False
 
-        wifiMode = mode
-        if (save):
-            wifiModeDef = mode
+    wifiMode = mode
+    if (save):
+        wifiModeDef = mode
 
-        return True
+    return True
 
 def connect(type: str, host: str, port: int) -> int:
     global linkInfo, lastErrorCode
@@ -412,7 +431,7 @@ def connect(type: str, host: str, port: int) -> int:
     link = linkInfo[linkId]
 
     if (link.flags & LINK_CONNECTED):
-        LOG_ERROR_PRINTF(f'linkId {linkId} is already connected.\r\n')
+        LOG_ERROR_PRINT(f'linkId {linkId} is already connected.\r\n')
         lastErrorCode = Error_LINK_ALREADY_CONNECTED
         return NO_LINK
 
@@ -467,7 +486,7 @@ def quitAP(save: int) -> int:
 
     if (wifiMode == WIFI_MODE_SAP):
         # STA is off
-        LOG_WARN_PRINT("STA is off\r\n")
+        LOG_ERROR_PRINT("STA is off\r\n")
         return False
 
     if (persistent or save):
@@ -610,7 +629,7 @@ def checkLinks() -> int:
                 link.flags = LINK_CONNECTED | LINK_IS_INCOMING
         else:
             # not connected
-            flags = 0
+            link.flags = 0
 
     return True
 
@@ -625,7 +644,7 @@ def recvLenQuery() -> int:
 
     tok = buffer[12:].split(b',')  # '+CIPRECVLEN:'
     for linkId in range(LINKS_COUNT):
-        if (linkId > len(tok)):
+        if (linkId >= len(tok)):
             break
 
         if (len(tok[linkId]) > 0):
@@ -641,11 +660,11 @@ def recvData(linkId: int, buffSize: int = 1000) -> bytes:
     LOG_INFO_PRINT(f'get data on link {linkId}\r\n')
 
     if (linkInfo[linkId].avail == 0):
-        if (not linkInfo[linkId].flags & LINK_CONNECTED):
-            LOG_WARN_PRINT("link is not active\r\n")
+        if (not (linkInfo[linkId].flags & LINK_CONNECTED)):
+            LOG_ERROR_PRINT("link is not active\r\n")
             lastErrorCode = Error_LINK_NOT_ACTIVE
         else:
-            LOG_WARN_PRINT("no data for link\r\n")
+            LOG_INFO_PRINT("no data for link\r\n")
         return b''
 
     sendString(f'AT+CIPRECVDATA={linkId},{buffSize}')
@@ -654,7 +673,7 @@ def recvData(linkId: int, buffSize: int = 1000) -> bytes:
         LOG_ERROR_PRINT(f'error receiving on link {linkId}\r\n')
         linkInfo[linkId].avail = 0
         lastErrorCode = Error_RECEIVE
-        return 0
+        return b''
 
     explen = int(buffer[13:])  # "+CIPRECVDATA," AT 1.7.x has : after <data_len> (not matching the doc)
     b = espUART.read(explen)
@@ -698,7 +717,7 @@ def apQuery() -> list:
     global wifiMode, buffer
     
     maintain()
-    if (wifiMode != WIFI_MODE_STA):
+    if (not (wifiMode & WIFI_MODE_STA)):
         LOG_ERROR_PRINT("STA is off\r\n", True)
         return None;
 
@@ -735,12 +754,290 @@ def dnsQuery() -> list:
     if (sendCommand("+CIPDNS_CUR", True, False) == False):
         return None
     ret.append(buffer.split(b':')[1].decode())
-    if (readRX("+CIPDNS_CUR", True, False) == False):
-        return None
-    ret.append(buffer.split(b':')[1].decode())
-    readOK()
-        
+    # second DNS server is optional — not all routers provide one
+    if (readRX("+CIPDNS_CUR", True, True)):  # listItem=True: stops cleanly at OK
+        ret.append(buffer.split(b':')[1].decode())
+    
     return ret
+
+def scanAP() -> list:
+    global buffer
+    
+    maintain()
+    LOG_INFO_PRINT("scan AP\r\n")
+    
+    # AT+CWLAP requires STA mode - ensure it is active
+    if not (wifiMode & WIFI_MODE_STA):
+        if setWifiMode(WIFI_MODE_STA, False) == False:
+            LOG_ERROR_PRINT("can't scan: STA mode not available\r\n")
+            return []
+
+    results = []
+    sendString("AT+CWLAP")
+    # AT+CWLAP takes up to ~10 s to probe all channels before returning any data,
+    # so use a 15-retry (15 s) timeout for the first response.
+    if (sendCommand("+CWLAP", True, True, 15) == False):
+        return results
+    # sendCommand already matched the first +CWLAP line; parse it, then loop
+    while True:
+        try:
+            inner = buffer[8:-1]  # strip "+CWLAP:(" and ")"
+            parts = inner.split(b',')
+            ecn = int(parts[0])
+            ssid = parts[1].decode()        # no quotes in ESP_ATMod format
+            rssi = int(parts[2])
+            mac = parts[3].decode()         # no quotes in ESP_ATMod format
+            channel = int(parts[4])
+            results.append((ssid, mac, channel, rssi, ecn))
+        except:
+            pass
+        if not readRX("+CWLAP", True, True):
+            break
+    return results
+
+def beginAP(ssid: str, password: str, channel: int, enc: int) -> int:
+    global wifiMode, persistent
+    
+    maintain()
+    LOG_INFO_PRINT(f'begin AP {ssid}\r\n')
+    
+    if (setWifiMode(wifiMode | WIFI_MODE_SAP, persistent) == False):
+        return False
+    
+    if (persistent):
+        sendString("AT+CWSAP=\"")
+    else:
+        sendString("AT+CWSAP_CUR=\"")
+    sendString(ssid)
+    sendString("\",\"")
+    sendString(password if password else "")
+    sendString(f'",{channel},{enc}')
+    return sendCommand(None, True, False)
+
+def connectUDP(host: str, port: int, localPort: int = 0) -> int:
+    global linkInfo, lastErrorCode
+    
+    maintain()
+    
+    linkId = freeLinkId()
+    if (linkId == NO_LINK):
+        return NO_LINK
+    
+    LOG_INFO_PRINT(f'start UDP to {host}:{port} on link {linkId}\r\n')
+    
+    link = linkInfo[linkId]
+    if (link.flags & LINK_CONNECTED):
+        LOG_ERROR_PRINT(f'linkId {linkId} is already connected.\r\n')
+        lastErrorCode = Error_LINK_ALREADY_CONNECTED
+        return NO_LINK
+    
+    cmd = f'AT+CIPSTART={linkId},"UDP","{host}",{port}'
+    if (localPort != 0):
+        cmd += f',{localPort},2'  # mode 2: destination can change
+    
+    if (sendString(cmd) != True):
+        link.flags = 0
+        return NO_LINK
+    
+    if (sendCommand(None, True, False) == False):
+        link.flags = 0
+        return NO_LINK
+    
+    link.flags = LINK_CONNECTED
+    if (localPort != 0):
+        link.flags |= LINK_IS_UDP_LISTENER
+    return linkId
+
+def sendDataUDP(linkId: int, buff: bytes, host: str = None, port: int = 0) -> int:
+    global linkInfo, espUART, buffer, lastErrorCode
+    
+    maintain()
+    LOG_INFO_PRINT(f'send UDP data on link {linkId}\r\n')
+    
+    if (len(buff) == 0):
+        return 0
+    if (not (linkInfo[linkId].flags & LINK_CONNECTED)):
+        LOG_ERROR_PRINT("link is not connected\r\n")
+        lastErrorCode = Error_LINK_NOT_ACTIVE
+        return 0
+    
+    cmd = f'AT+CIPSEND={linkId},{len(buff)}'
+    if (host):
+        cmd += f',"{host}",{port}'
+    sendString(cmd)
+    
+    if (sendCommand(">", True, False) == False):
+        return 0
+    if (espUART.write(buff) != len(buff)):
+        return 0
+    if (readRX("Recv ", True, False) == False):
+        return 0
+    
+    l = buffer.find(b' ', 5)
+    sendOk = False
+    if (l > 0):
+        rLen = int(buffer[5:l])
+        if (readRX("SEND ", True, False) == True):
+            if (buffer[5:7] == b'OK'):
+                sendOk = True
+    
+    if (not sendOk):
+        LOG_ERROR_PRINT("failed to send UDP data\r\n")
+        lastErrorCode = Error_SEND
+        return 0
+    
+    LOG_INFO_PRINT(f'\tsent {rLen} UDP bytes on link {linkId}\r\n')
+    return rLen
+
+def startServer(port: int, timeout: int = 0) -> int:
+    maintain()
+    LOG_INFO_PRINT(f'start server on port {port}\r\n')
+    
+    if (timeout > 0):
+        if (not simpleCommand(f'AT+CIPSTO={timeout}')):
+            return False
+    
+    return simpleCommand(f'AT+CIPSERVER=1,{port}')
+
+def stopServer() -> int:
+    maintain()
+    LOG_INFO_PRINT("stop server\r\n")
+    return simpleCommand("AT+CIPSERVER=0")
+
+def serverTimeout(timeout: int) -> int:
+    maintain()
+    return simpleCommand(f'AT+CIPSTO={timeout}')
+
+def getIncomingLinkId() -> int:
+    global linkInfo
+    
+    maintain()
+    for linkId in range(LINKS_COUNT):
+        link = linkInfo[linkId]
+        if ((link.flags & LINK_IS_INCOMING) and not (link.flags & LINK_IS_ACCEPTED)):
+            link.flags = (link.flags & ~LINK_IS_INCOMING) | LINK_IS_ACCEPTED
+            LOG_INFO_PRINT(f'accepted incoming link {linkId}\r\n')
+            return linkId
+    return NO_LINK
+
+def setHostname(name: str) -> int:
+    maintain()
+    LOG_INFO_PRINT(f'set hostname {name}\r\n')
+    return simpleCommand(f'AT+CWHOSTNAME="{name}"')
+
+def getHostname() -> str:
+    global buffer
+    
+    maintain()
+    sendString("AT+CWHOSTNAME?")
+    if (sendCommand("+CWHOSTNAME", True, False) == False):
+        return None
+    name = buffer[12:].decode()  # "+CWHOSTNAME:"
+    readOK()
+    return name
+
+def staMacQuery() -> str:
+    global buffer
+    
+    maintain()
+    sendString("AT+CIPSTAMAC?")
+    if (sendCommand("+CIPSTAMAC", True, False) == False):
+        return None
+    mac = buffer[12:-1].decode()  # '+CIPSTAMAC:"...'
+    readOK()
+    return mac
+
+def apMacQuery() -> str:
+    global buffer
+    
+    maintain()
+    sendString("AT+CIPAPMAC?")
+    if (sendCommand("+CIPAPMAC", True, False) == False):
+        return None
+    mac = buffer[11:-1].decode()  # '+CIPAPMAC:"...'
+    readOK()
+    return mac
+
+def setStaticIp(ip: str, gateway: str = None, subnet: str = None) -> int:
+    global persistent
+    
+    maintain()
+    LOG_INFO_PRINT(f'set static IP {ip}\r\n')
+    
+    # disable DHCP first (required for static IP)
+    if (persistent):
+        simpleCommand("AT+CWDHCP=1,0")
+    else:
+        simpleCommand("AT+CWDHCP_CUR=1,0")
+    
+    if (persistent):
+        cmd = f'AT+CIPSTA="{ip}"'
+    else:
+        cmd = f'AT+CIPSTA_CUR="{ip}"'
+    if (gateway):
+        cmd += f',"{gateway}"'
+    if (subnet):
+        cmd += f',"{subnet}"'
+    return simpleCommand(cmd)
+
+def setDns(dns1: str, dns2: str = None) -> int:
+    global persistent
+    
+    maintain()
+    LOG_INFO_PRINT(f'set DNS {dns1}\r\n')
+    
+    if (persistent):
+        cmd = f'AT+CIPDNS=1,"{dns1}"'
+    else:
+        cmd = f'AT+CIPDNS_CUR=1,"{dns1}"'
+    if (dns2):
+        cmd += f',"{dns2}"'
+    return simpleCommand(cmd)
+
+def setDhcp(mode: int, enable: int) -> int:
+    global persistent
+    
+    maintain()
+    if (persistent):
+        return simpleCommand(f'AT+CWDHCP={mode},{enable}')
+    else:
+        return simpleCommand(f'AT+CWDHCP_CUR={mode},{enable}')
+
+def autoConnect(enable: int) -> int:
+    maintain()
+    return simpleCommand(f'AT+CWAUTOCONN={enable}')
+
+def ssidQuery() -> str:
+    q = apQuery()
+    if (not q):
+        return None
+    return q[0].split(b':')[1][1:-1].decode()  # +CWJAP:"ssid"
+
+def bssidQuery() -> str:
+    q = apQuery()
+    if (not q):
+        return None
+    return q[1][1:-1].decode()  # "bssid"
+
+def cipStatusQuery(linkId: int) -> tuple:
+    global buffer
+    
+    maintain()
+    sendString("AT+CIPSTATUS")
+    if (sendCommand("STATUS", True, False) == False):
+        return None
+    
+    while (readRX("+CIPSTATUS", True, True)):
+        lid = buffer[11] - 48  # '+CIPSTATUS:'
+        if (lid == linkId):
+            # +CIPSTATUS:<link ID>,<type>,<remote IP>,<remote port>,<local port>,<tetype>
+            # buffer[12:] starts with ',' so parts[0] is empty, parts[1]=type, parts[2]=IP, etc.
+            parts = buffer[12:].split(b',')
+            remoteIp = parts[2].decode()   # no quotes in ESP_ATMod
+            remotePort = int(parts[3])
+            localPort = int(parts[4])
+            return (remoteIp, remotePort, localPort)
+    return None
 
 
 ####################### For Debugging 
