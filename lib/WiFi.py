@@ -131,7 +131,7 @@ class Client:
         return b + self.readBuf(size - len(b))  # handle the rest of provided buffer
 
     def peek(self) -> int:
-        if (self.linkId == EspAtDrv.NO_LINK or self.available == 0):
+        if (self.linkId == EspAtDrv.NO_LINK or self.available() == 0):
             return -1
 
         # copy from internal buffer
@@ -147,6 +147,35 @@ class Client:
 #    def remotePort(self):
 #    def localPort(self):
         
+###################################
+
+class Server:
+    def __init__(self, port: int):
+        self._port = port
+        self._started = False
+    
+    def begin(self, timeout: int = 30):
+        if (EspAtDrv.startServer(self._port, timeout)):
+            self._started = True
+    
+    def end(self):
+        if (self._started):
+            EspAtDrv.stopServer()
+            self._started = False
+    
+    def setTimeout(self, timeout: int):
+        EspAtDrv.serverTimeout(timeout)
+    
+    def available(self) -> Client:
+        linkId = EspAtDrv.getIncomingLinkId()
+        if (linkId == EspAtDrv.NO_LINK):
+            return None
+        cli = Client()
+        cli.linkId = linkId
+        cli.assigned = True
+        clientPool[linkId] = cli
+        return cli
+
 ###################################
 
 clientPool = []
@@ -211,9 +240,6 @@ def disconnect(persistent: int) -> int:
 def setPersistent(persistent: int) -> int:
     return EspAtDrv.sysPersistent(persistent)
 
-def endAP(persistent: int):
-    raise NotImplementedError('WiFi.py - endAP')
-
 def rssi() -> int:
     q = EspAtDrv.apQuery()
     if (not q):
@@ -252,15 +278,49 @@ def dnsIp(n: int = None):
         return q
     return q[n-1]
 
-# TODO:
-#    UDP support
-#    def autoConnect(autoconnect: int) -> int:
-#    def config(localIp, DnsServer, gateway, subnet):
-#    def setDns(dnsServer1, dnsServer2):
-#    def hostName(name: str) -> str:
-#    def macAddress(mac: bytes) -> bytes:
-#    def dhcpIsEnabled() -> int:
-#    def ssid(ssid: str):
-#    def bssid(bssid: str):
-#    def scanNetworks():
-    
+def autoConnect(autoconnect: int) -> int:
+    return EspAtDrv.autoConnect(autoconnect)
+
+def config(localIp: str, dnsServer: str = None, gateway: str = None, subnet: str = None):
+    if (localIp):
+        EspAtDrv.setStaticIp(localIp, gateway, subnet)
+    if (dnsServer):
+        EspAtDrv.setDns(dnsServer)
+
+def setDns(dnsServer1: str, dnsServer2: str = None):
+    return EspAtDrv.setDns(dnsServer1, dnsServer2)
+
+def hostName(name: str = None) -> str:
+    if (name):
+        EspAtDrv.setHostname(name)
+        return name
+    return EspAtDrv.getHostname()
+
+def macAddress() -> str:
+    return EspAtDrv.staMacQuery()
+
+def dhcpIsEnabled() -> int:
+    # AT firmware doesn't provide a query for this; assume enabled by default
+    return True
+
+def ssid() -> str:
+    return EspAtDrv.ssidQuery()
+
+def bssid() -> str:
+    return EspAtDrv.bssidQuery()
+
+def scanNetworks() -> list:
+    return EspAtDrv.scanAP()
+
+def beginAP(ssid: str, password: str = None, channel: int = 1, enc: int = 0) -> int:
+    global state
+    if (password and enc == 0):
+        enc = 4  # WPA2_PSK
+    ok = EspAtDrv.beginAP(ssid, password, channel, enc)
+    state = WL_AP_LISTENING if ok else WL_AP_FAILED
+    return state
+
+def endAP(persistent: int = False):
+    global state
+    if (EspAtDrv.setWifiMode(EspAtDrv.WIFI_MODE_STA, persistent)):
+        state = WL_DISCONNECTED
