@@ -4,6 +4,7 @@
 #
 # Version:
 #  0.1.0: initial version
+#  0.1.1: class Server
 
 from micropython import const
 import EspAtDrv
@@ -18,6 +19,8 @@ WL_DISCONNECTED = const(4)
 WL_AP_LISTENING = const(5)
 WL_AP_CONNECTED = const(6)
 WL_AP_FAILED = const(7)
+WL_SRV_CLOSED = const(8)
+WL_SRV_LISTEN = const(9)
 
 ###################################
 
@@ -164,12 +167,22 @@ class Server:
             self._started = False
     
     def setTimeout(self, timeout: int):
-        EspAtDrv.serverTimeout(timeout)
+        if (self._started):
+            EspAtDrv.serverTimeout(timeout)
     
+    def status(self):
+        if (self._started):
+            return WL_SRV_LISTEN
+        return WL_SRV_CLOSED
+        
     def available(self) -> Client:
+        if (not self._started):
+            return None
+            
         linkId = EspAtDrv.getIncomingLinkId()
         if (linkId == EspAtDrv.NO_LINK):
             return None
+            
         cli = Client()
         cli.linkId = linkId
         cli.assigned = True

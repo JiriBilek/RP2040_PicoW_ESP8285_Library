@@ -23,7 +23,7 @@ class EspAtDrv_linkInfo:
 # constants
 # Logging: setting to True enables the particular logging
 LOG_ERROR = const(True)
-LOG_INFO = const(True)
+LOG_INFO = const(False)
 LOG_DEBUG = const(False)
 
 LINKS_COUNT = const(5)
