@@ -51,7 +51,7 @@ WIFI_MODE_STA = const(1)  # 0b01
 WIFI_MODE_SAP = const(2)  # 0b10
 
 TIMEOUT = const(1000)
-TIMEOUT_COUNT = const(5)
+TIMEOUT_COUNT = const(15)
 
 LINK_CONNECTED = const(1)         # (1 << 0)
 LINK_CLOSING = const(2)           # (1 << 1)
@@ -108,7 +108,7 @@ def reset(resetType: int) -> int:
         LOG_INFO_PRINT("soft reset\r\n")
 
         sendString("AT+RST\r\n")
-        _waitReady(3000)  # drain boot noise without triggering error log
+        _waitReady(5000)  # drain boot noise without triggering error log
     else:
         LOG_INFO_PRINT("no reset\r\n")
 
